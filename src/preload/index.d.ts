@@ -4,7 +4,9 @@ declare global {
   interface Window {
     electron: ElectronAPI
     api: {
-      onGesture: (callback: (data) => void) => () => void
+      onGesture: (callback: (data: string) => void) => () => void
+      onWebSocketState: (callback: (data: string) => void) => () => void
+      getWebSocketState: () => Promise<string>
     }
   }
 }

@@ -23,6 +23,23 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+    // Open DevTools in development
+    if (is.dev) {
+      mainWindow.webContents.openDevTools()
+    }
+  })
+
+  // Send current WebSocket state when renderer is ready
+  mainWindow.webContents.on('did-finish-load', () => {
+    const state = wsService.getConnectionState()
+    mainWindow.webContents.send(
+      'websocket-state',
+      JSON.stringify({
+        state,
+        attempts: 0,
+        nextRetryIn: 0
+      })
+    )
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -53,13 +70,26 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // Initialize WebSocket service
-  wsService.connect()
-
   // IPC configuration
   ipcConfig(ipcMain, wsService)
 
+  // Handle request for current WebSocket state
+  ipcMain.handle('get-websocket-state', () => {
+    const state = wsService.getConnectionState()
+    return JSON.stringify({
+      state,
+      attempts: 0,
+      nextRetryIn: 0
+    })
+  })
+
   createWindow()
+
+  // Initialize WebSocket service after window is created
+  // This ensures the renderer can receive state updates
+  setTimeout(() => {
+    wsService.connect()
+  }, 100)
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the

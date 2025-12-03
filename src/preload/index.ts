@@ -10,6 +10,16 @@ const api = {
     }
     ipcRenderer.on('gesture-event', listener)
     return () => ipcRenderer.removeListener('gesture-event', listener)
+  },
+  onWebSocketState: (callback: (data: string) => void) => {
+    const listener = (_: unknown, data: string): void => {
+      callback(data) // Pass raw string, let component parse it
+    }
+    ipcRenderer.on('websocket-state', listener)
+    return () => ipcRenderer.removeListener('websocket-state', listener)
+  },
+  getWebSocketState: () => {
+    return ipcRenderer.invoke('get-websocket-state')
   }
 }
 

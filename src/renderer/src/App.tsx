@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import ConnectionStatus from './components/ConnectionStatus'
 
 function App(): React.JSX.Element {
   const ipcRenderer = window.electron.ipcRenderer
@@ -18,6 +19,7 @@ function App(): React.JSX.Element {
 
   return (
     <>
+      <ConnectionStatus />
       <div className="">Powered by electron-vite</div>
       <button onClick={sendGesture}>send</button>
     </>
