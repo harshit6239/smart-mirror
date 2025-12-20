@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pathlib
 import time
+from threading import Event
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 import cv2
@@ -29,8 +30,9 @@ except ImportError:  # pragma: no cover - Pi-specific optional dependency
 
 
 DEFAULT_STATIC_THRESHOLD = 0.4
-DEFAULT_DYNAMIC_THRESHOLD = 0.65
+DEFAULT_DYNAMIC_THRESHOLD = 0.5
 DEFAULT_DYNAMIC_HOLD_FRAMES = 10
+DEFAULT_DYNAMIC_EVAL_INTERVAL = 3
 
 
 class GesturePipeline:
@@ -43,6 +45,7 @@ class GesturePipeline:
         static_threshold: float = DEFAULT_STATIC_THRESHOLD,
         dynamic_threshold: float = DEFAULT_DYNAMIC_THRESHOLD,
         dynamic_hold_frames: int = DEFAULT_DYNAMIC_HOLD_FRAMES,
+        dynamic_eval_interval: int = DEFAULT_DYNAMIC_EVAL_INTERVAL,
         use_picamera2: bool = False,
         picamera_resolution: tuple[int, int] = (640, 360),
     ) -> None:
@@ -50,6 +53,7 @@ class GesturePipeline:
         self.static_threshold = static_threshold
         self._dynamic_threshold = dynamic_threshold
         self._dynamic_hold_frames = dynamic_hold_frames
+        self._dynamic_eval_interval = max(1, dynamic_eval_interval)
         self._use_picamera2 = use_picamera2
         self._picamera_resolution = picamera_resolution
         self._hand_detector = HandDetector()
@@ -82,6 +86,7 @@ class GesturePipeline:
         show_window: bool = False,
         on_dynamic: Optional[Callable[[DynamicGestureDetection], None]] = None,
         on_static: Optional[Callable[[tuple[str, float]], None]] = None,
+        stop_event: Optional[Event] = None,
     ) -> None:
         """Process frames until interrupted, optionally emitting callbacks."""
 
@@ -96,9 +101,12 @@ class GesturePipeline:
 
         dynamic_overlay: Optional[tuple[str, float]] = None
         dynamic_hold = 0
+        frames_since_dynamic_eval = 0
 
         try:
             while True:
+                if stop_event and stop_event.is_set():
+                    break
                 if self._use_picamera2 and self._picamera is not None:
                     frame = self._picamera.capture_array()
                     if frame is None:
@@ -141,6 +149,9 @@ class GesturePipeline:
                 )
                 if dynamic_hold == 0:
                     self._buffer.enqueue(landmark_frame)
+                    frames_since_dynamic_eval += 1
+                else:
+                    frames_since_dynamic_eval = 0
 
                 if show_window and static_prediction:
                     static_label = f"Static: {static_prediction[0]} ({static_prediction[1]:.2f})"
@@ -154,13 +165,17 @@ class GesturePipeline:
                         2,
                     )
 
-                dynamic_detection = self._dynamic_processor.update() if dynamic_hold == 0 else None
+                dynamic_detection = None
+                if dynamic_hold == 0 and frames_since_dynamic_eval >= self._dynamic_eval_interval:
+                    dynamic_detection = self._dynamic_processor.update()
+                    frames_since_dynamic_eval = 0
                 if dynamic_detection:
                     if on_dynamic:
                         on_dynamic(dynamic_detection)
                     if dynamic_detection.label != "NONE":
                         dynamic_overlay = (dynamic_detection.label, dynamic_detection.confidence)
                         dynamic_hold = self._dynamic_hold_frames
+                        frames_since_dynamic_eval = 0
                     else:
                         dynamic_overlay = None
                         dynamic_hold = 0
@@ -168,6 +183,7 @@ class GesturePipeline:
                     dynamic_hold -= 1
                     if dynamic_hold == 0:
                         dynamic_overlay = None
+                        frames_since_dynamic_eval = 0
 
                 if show_window:
                     if dynamic_overlay:
