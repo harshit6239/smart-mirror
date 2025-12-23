@@ -72,7 +72,7 @@ while True:
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
-data.to_csv(f"src/detection/hand_tracking/gestures/static_gestures/dataset/datasets/{args.gesture_name}.csv", index=False)
+data.to_csv(f"src/detection/hand_tracking/gesture_models/static_gestures/dataset/datasets/{args.gesture_name}.csv", index=False)
 
 cap.release()
 cv2.destroyAllWindows()

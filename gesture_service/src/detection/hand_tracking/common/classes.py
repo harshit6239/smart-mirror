@@ -12,6 +12,7 @@ class Landmark:
 @dataclass
 class LandmarkFrame():
     landmarks: list[Landmark]
+    landmark_centroid: tuple[float, float]
     timestamp: float
     static_gesture: tuple[str, float]  # (gesture_name, confidence)
 

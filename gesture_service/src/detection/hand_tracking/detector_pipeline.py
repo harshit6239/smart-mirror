@@ -8,12 +8,17 @@ from threading import Event
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 import cv2
-import joblib
 
 from .common.classes import LandmarkFrame
-from .modules.buffer_processor import BufferProcessor, DynamicGestureDetection
+from .modules.buffer_processor import (
+    BufferProcessor,
+    DynamicGestureDetection,
+    create_buffer_processor,
+)
+from .modules.detectors.static_gesture_detector import StaticGestureDetector
 from .modules.hand_detector import HandDetector
 from .modules.landmark_buffer import LandmarkBuffer
+from .modules.utils.model_loader import load_model_bundle
 
 if TYPE_CHECKING:
     from picamera2 import Picamera2 as Picamera2Type  # type: ignore[import]
@@ -30,7 +35,7 @@ except ImportError:  # pragma: no cover - Pi-specific optional dependency
 
 
 DEFAULT_STATIC_THRESHOLD = 0.4
-DEFAULT_DYNAMIC_THRESHOLD = 0.5
+DEFAULT_DYNAMIC_THRESHOLD = 0.8
 DEFAULT_DYNAMIC_HOLD_FRAMES = 10
 DEFAULT_DYNAMIC_EVAL_INTERVAL = 3
 
@@ -50,7 +55,6 @@ class GesturePipeline:
         picamera_resolution: tuple[int, int] = (640, 360),
     ) -> None:
         self.camera_index = camera_index
-        self.static_threshold = static_threshold
         self._dynamic_threshold = dynamic_threshold
         self._dynamic_hold_frames = dynamic_hold_frames
         self._dynamic_eval_interval = max(1, dynamic_eval_interval)
@@ -58,13 +62,14 @@ class GesturePipeline:
         self._picamera_resolution = picamera_resolution
         self._hand_detector = HandDetector()
         self._buffer = LandmarkBuffer()
-        self._label_encoder, self._classifier = self._load_static_models()
+        self._static_detector = StaticGestureDetector(confidence_threshold=static_threshold)
+        self.static_threshold = static_threshold
         self._dynamic_label_encoder, self._dynamic_classifier = self._load_dynamic_models()
-        self._dynamic_processor = BufferProcessor(
+        self._dynamic_processor: BufferProcessor = create_buffer_processor(
+            "pca",
             self._buffer,
-            classifier=self._dynamic_classifier,
-            label_encoder=self._dynamic_label_encoder,
-            confidence_threshold=self._dynamic_threshold,
+            auto_clear=True,
+            linearity_threshold=self._dynamic_threshold,
         )
         self._picamera: Optional[Picamera2Type] = None
 
@@ -127,23 +132,19 @@ class GesturePipeline:
                     frame = processed
 
                 landmarks = self._hand_detector.extract_normalized_landmarks(frame)
-                landmarks = sorted(landmarks, key=lambda lm: lm.id)
-
-                static_prediction: Optional[tuple[str, float]] = None
+                static_prediction = self._static_detector.predict(landmarks)
+                if static_prediction and on_static:
+                    on_static(static_prediction)
+                    
+                landmarkCentroid = (0.0, 0.0)
                 if landmarks:
-                    landmark_values = [coord for lm in landmarks for coord in (lm.x, lm.y)]
-                    gesture_label = self._classifier.predict([landmark_values])[0]
-                    confidence_scores = self._classifier.predict_proba([landmark_values])[0]
-                    confidence = max(confidence_scores)
-                    gesture_name = self._label_encoder.inverse_transform([gesture_label])[0]
-
-                    if confidence > self.static_threshold:
-                        static_prediction = (gesture_name, confidence)
-                        if on_static:
-                            on_static(static_prediction)
+                    x_sum = sum(lm.x for lm in landmarks)
+                    y_sum = sum(lm.y for lm in landmarks)
+                    landmarkCentroid = (x_sum / len(landmarks), y_sum / len(landmarks))
 
                 landmark_frame = LandmarkFrame(
                     landmarks=landmarks,
+                    landmark_centroid=landmarkCentroid,
                     timestamp=time.time(),
                     static_gesture=static_prediction if static_prediction else ("", 0.0),
                 )
@@ -210,30 +211,23 @@ class GesturePipeline:
                 cv2.destroyAllWindows()
 
     @staticmethod
-    def _load_static_models():
-        current_dir = pathlib.Path(__file__).parent
-        static_model_dir = current_dir / "gestures/static_gestures/models"
-
-        with open(static_model_dir / "static_gesture_label_encoder.pkl", "rb") as encoder_file:
-            label_encoder = joblib.load(encoder_file)
-
-        with open(static_model_dir / "static_gesture_classifier.pkl", "rb") as model_file:
-            classifier = joblib.load(model_file)
-
-        return label_encoder, classifier
-
-    @staticmethod
     def _load_dynamic_models():
         current_dir = pathlib.Path(__file__).parent
-        dynamic_model_dir = current_dir / "gestures/dynamic_gestures/models"
+        dynamic_model_dir = current_dir / "gesture_models/dynamic_gestures/models"
 
-        with open(dynamic_model_dir / "dynamic_gesture_label_encoder.pkl", "rb") as encoder_file:
-            label_encoder = joblib.load(encoder_file)
+        return load_model_bundle(
+            dynamic_model_dir,
+            encoder_filename="dynamic_gesture_label_encoder.pkl",
+            classifier_filename="dynamic_gesture_classifier.pkl",
+        )
 
-        with open(dynamic_model_dir / "dynamic_gesture_classifier.pkl", "rb") as model_file:
-            classifier = joblib.load(model_file)
+    @property
+    def static_threshold(self) -> float:
+        return self._static_detector.confidence_threshold
 
-        return label_encoder, classifier
+    @static_threshold.setter
+    def static_threshold(self, value: float) -> None:
+        self._static_detector.confidence_threshold = float(value)
 
 
 def main() -> None:

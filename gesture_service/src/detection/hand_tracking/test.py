@@ -1,18 +1,10 @@
-import pathlib
 import cv2
 import time
 from src.detection.hand_tracking.modules.hand_detector import HandDetector
-import joblib
-    
-
-def _load_static_models():
-    current_dir = pathlib.Path(__file__).parent
-    static_model_dir = current_dir / "gestures/static_gestures/models"
-    with open(static_model_dir / "static_gesture_label_encoder.pkl", "rb") as encoder_file:
-        label_encoder = joblib.load(encoder_file)
-    with open(static_model_dir / "static_gesture_classifier.pkl", "rb") as model_file:
-        classifier = joblib.load(model_file)
-    return label_encoder, classifier
+from .common.classes import LandmarkFrame
+from .modules.buffer_processor import BufferProcessor, create_buffer_processor
+from .modules.landmark_buffer import LandmarkBuffer
+import mediapipe as mp
 
 def run_demo(camera_index: int = 0) -> None:
     """Simple demo loop for testing the hand detector interactively."""
@@ -23,7 +15,13 @@ def run_demo(camera_index: int = 0) -> None:
 
     detector = HandDetector()
     prev_time = time.time()
-    label_encoder, classifier = _load_static_models()
+    landmark_buffer = LandmarkBuffer()
+    buffer_processor: BufferProcessor = create_buffer_processor(
+        "pca",
+        landmark_buffer,
+        auto_clear=True,
+        linearity_threshold=0.8,
+    )
     
     frame_count = 0
     last_count = 0
@@ -44,20 +42,45 @@ def run_demo(camera_index: int = 0) -> None:
         landmarks = sorted(landmarks, key=lambda lm: lm.id)
         
         if landmarks:
-            feature_vector = []
-            for lm in landmarks:
-                feature_vector.extend([lm.x, lm.y])
-            prediction = classifier.predict([feature_vector])
-            predicted_label = label_encoder.inverse_transform(prediction)[0]
-            cv2.putText(
+            landmark_centroid = (0.0, 0.0)
+            x_sum = sum(lm.x for lm in landmarks)
+            y_sum = sum(lm.y for lm in landmarks)
+            landmark_centroid = (x_sum / len(landmarks), y_sum / len(landmarks))
+            cam_height, cam_width, _ = frame.shape
+            
+            cv2.circle(
                 frame,
-                f"Gesture: {predicted_label}",
-                (10, 110),
-                cv2.FONT_HERSHEY_PLAIN,
-                2,
+                (int(landmark_centroid[0] * cam_width), int(landmark_centroid[1] * cam_height)),
+                7,
                 (0, 255, 0),
-                2,
+                cv2.FILLED,
             )
+            
+            landmark_frame = LandmarkFrame(
+                landmarks,
+                landmark_centroid=landmark_centroid,
+                timestamp=time.time(),
+                static_gesture=("", 0.0),
+            )
+            
+            landmark_buffer.enqueue(landmark_frame)
+            
+            dynamic_detection = None
+            if landmark_buffer.size() == landmark_buffer.maxSize():
+                dynamic_detection = buffer_processor.update()
+                print(f"Dynamic Detection: {dynamic_detection}")
+                if dynamic_detection:
+                    label, confidence = dynamic_detection.label, dynamic_detection.confidence
+                    cv2.putText(
+                        frame,
+                        f"{label} ({confidence:.2f})",
+                        (10, 30),
+                        cv2.FONT_HERSHEY_PLAIN,
+                        2,
+                        (0, 255, 0),
+                        2,
+                    )
+            
 
         current_time = time.time()
         fps = 1.0 / (current_time - prev_time)

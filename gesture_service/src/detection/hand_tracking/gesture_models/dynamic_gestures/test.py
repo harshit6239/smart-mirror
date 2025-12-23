@@ -66,7 +66,11 @@ def run_demo(camera_index: int = 0) -> None:
 
         if not holding:
             if landmarks:
-                landmark_frame = LandmarkFrame(landmarks, time.time(), ("", 0.0))
+                landmarkCentroid = (0.0, 0.0)
+                x_sum = sum(lm.x for lm in landmarks)
+                y_sum = sum(lm.y for lm in landmarks)
+                landmarkCentroid = (x_sum / len(landmarks), y_sum / len(landmarks))
+                landmark_frame = LandmarkFrame(landmarks, landmark_centroid=landmarkCentroid, timestamp=time.time(), static_gesture=("", 0.0))
                 landmark_buffer.enqueue(landmark_frame)
 
             if landmark_buffer.size() == buffer_size:

@@ -1,87 +1,58 @@
-"""Model-backed dynamic gesture inference over buffered landmark frames."""
+"""Factory utilities for constructing dynamic gesture buffer processors."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Dict
 
-from ..common import classes
 from .landmark_buffer import LandmarkBuffer
+from .buffer_processors import (
+	BufferProcessor,
+	DynamicGestureDetection,
+	PCABufferProcessor,
+	MLBufferProcessor,
+)
 
 
-@dataclass(slots=True)
-class DynamicGestureDetection:
-    """Represents a dynamic gesture prediction emitted by the ML model."""
+ProcessorFactory = Callable[..., BufferProcessor]
 
-    label: str
-    confidence: float
-    start_time: float
-    end_time: float
-    label_index: int
-    probabilities: Sequence[float]
+_PROCESSOR_FACTORIES: Dict[str, ProcessorFactory] = {}
 
 
-class BufferProcessor:
-    """Collects buffered frames and produces ML-based dynamic gesture predictions."""
+def register_buffer_processor(name: str, factory: ProcessorFactory) -> None:
+	"""Register a buffer processor factory under the provided name."""
 
-    def __init__(
-        self,
-        buffer: LandmarkBuffer,
-        classifier: Any,
-        label_encoder: Any,
-        *,
-        confidence_threshold: float = 0.65,
-        expected_landmark_count: int = 21,
-        auto_clear: bool = True,
-    ) -> None:
-        self._buffer = buffer
-        self._classifier = classifier
-        self._label_encoder = label_encoder
-        self._confidence_threshold = confidence_threshold
-        self._expected_landmark_count = expected_landmark_count
-        self._auto_clear = auto_clear
+	normalized = name.strip().lower()
+	if not normalized:
+		raise ValueError("Processor name must not be empty")
+	_PROCESSOR_FACTORIES[normalized] = factory
 
-    def update(self) -> Optional[DynamicGestureDetection]:
-        """Evaluate the buffered frames and return a gesture when confident enough."""
 
-        if self._buffer.size() < self._buffer.maxSize():
-            return None
+def create_buffer_processor(
+	name: str,
+	buffer: LandmarkBuffer,
+	/,
+	**kwargs: Any,
+) -> BufferProcessor:
+	"""Instantiate the requested buffer processor using the registered factory."""
 
-        frames = self._buffer.frames()
-        if not frames:
-            return None
+	normalized = name.strip().lower()
+	factory = _PROCESSOR_FACTORIES.get(normalized)
+	if factory is None:
+		available = ", ".join(sorted(_PROCESSOR_FACTORIES)) or "<none>"
+		raise ValueError(
+			f"Unknown buffer processor '{name}'. Available options: {available}"
+		)
+	return factory(buffer=buffer, **kwargs)
 
-        if any(len(frame.landmarks) != self._expected_landmark_count for frame in frames):
-            if self._auto_clear:
-                self._buffer.clear()
-            return None
 
-        feature_vector: list[float] = []
-        for frame in frames:
-            ordered_landmarks = sorted(frame.landmarks, key=lambda lm: lm.id)
-            for landmark in ordered_landmarks:
-                feature_vector.extend((float(landmark.x), float(landmark.y)))
+# Register built-in processors. Additional processors can be registered elsewhere.
+register_buffer_processor("ml", MLBufferProcessor)
+register_buffer_processor("pca", PCABufferProcessor)
 
-        prediction = self._classifier.predict([feature_vector])[0]
-        probabilities = self._classifier.predict_proba([feature_vector])[0]
-        confidence = float(max(probabilities))
-
-        if self._auto_clear:
-            self._buffer.clear()
-
-        if confidence < self._confidence_threshold:
-            return None
-
-        label = self._label_encoder.inverse_transform([prediction])[0]
-        
-        if label == "NONE":
-            return None
-        
-        return DynamicGestureDetection(
-            label=label,
-            confidence=confidence,
-            start_time=frames[0].timestamp,
-            end_time=frames[-1].timestamp,
-            label_index=int(prediction),
-            probabilities=tuple(float(p) for p in probabilities),
-        )
+__all__ = [
+	"DynamicGestureDetection",
+	"BufferProcessor",
+	"ProcessorFactory",
+	"create_buffer_processor",
+	"register_buffer_processor",
+]

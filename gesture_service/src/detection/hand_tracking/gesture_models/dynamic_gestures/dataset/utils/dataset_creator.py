@@ -52,7 +52,11 @@ while True:
     landmarks = sorted(landmarks, key=lambda lm: lm.id)
     
     if landmarks:
-        landmark_frame = LandmarkFrame(landmarks, time.time(), ("", 0.0))
+        landmarkCentroid = (0.0, 0.0)
+        x_sum = sum(lm.x for lm in landmarks)
+        y_sum = sum(lm.y for lm in landmarks)
+        landmarkCentroid = (x_sum / len(landmarks), y_sum / len(landmarks))
+        landmark_frame = LandmarkFrame(landmarks, landmark_centroid=landmarkCentroid, timestamp=time.time(), static_gesture=("", 0.0))
         buffer.enqueue(landmark_frame)
 
     current_time = time.time()
@@ -102,7 +106,7 @@ while True:
     if len(data) >= args.max_samples:
         break
 
-data.to_csv(f"src/detection/hand_tracking/gestures/dynamic_gestures/dataset/datasets/{args.gesture_name}.csv", index=False)
+data.to_csv(f"src/detection/hand_tracking/gesture_models/dynamic_gestures/dataset/datasets/{args.gesture_name}.csv", index=False)
 
 cap.release()
 cv2.destroyAllWindows()
