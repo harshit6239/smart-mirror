@@ -22,13 +22,22 @@ class PCABufferProcessor(BufferProcessor):
         linearity_threshold: float = 0.85,
         min_total_variance: float = 25.0,
         min_displacement: float = 0.2,
+        skip_frames_after_detection: int = 0,
     ) -> None:
         super().__init__(buffer, auto_clear=auto_clear)
         self._linearity_threshold = linearity_threshold
         self._min_total_variance = min_total_variance
         self._min_displacement = min_displacement
+        self._skip_frames_after_detection = max(0, skip_frames_after_detection)
+        self._cooldown_frames = 0
 
     def update(self) -> Optional[DynamicGestureDetection]:
+        if self._cooldown_frames > 0:
+            if self._auto_clear:
+                self._buffer.clear()
+            self._cooldown_frames -= 1
+            return None
+
         if self._buffer.size() < self._buffer.maxSize():
             return None
 
@@ -94,7 +103,7 @@ class PCABufferProcessor(BufferProcessor):
         delta_y = centroids[-1][1] - centroids[0][1]
         displacement = math.hypot(delta_x, delta_y)
         if displacement < self._min_displacement:
-            print("Displacement too small:", displacement)
+            # print("Displacement too small:", displacement)
             if self._auto_clear:
                 self._buffer.clear()
             return None
@@ -103,12 +112,21 @@ class PCABufferProcessor(BufferProcessor):
             vx = -vx
             vy = -vy
 
-        if abs(vx) > abs(vy):
-            label = "SWIPE_RIGHT" if vx > 0 else "SWIPE_LEFT"
-        else:
-            label = "SWIPE_DOWN" if vy > 0 else "SWIPE_UP"
+        angle_deg = math.degrees(math.atan2(vy, vx))
+        axis_tolerance = 30.0
 
-        confidence = max(0.0, min(1.0, linearity))
+        if -axis_tolerance <= angle_deg <= axis_tolerance:
+            label = "SWIPE_RIGHT"
+        elif angle_deg >= 150.0 or angle_deg <= -150.0:
+            label = "SWIPE_LEFT"
+        elif 60.0 <= angle_deg <= 120.0:
+            label = "SWIPE_DOWN"
+        elif -120.0 <= angle_deg <= -60.0:
+            label = "SWIPE_UP"
+        else:
+            label = "NONE"
+
+        confidence = max(0.0, min(1.0, linearity)) if label != "NONE" else 0.0
         probabilities = [0.0] * len(self._LABELS)
         label_index = self._LABELS.index(label)
         probabilities[0] = 1.0 - confidence
@@ -116,8 +134,9 @@ class PCABufferProcessor(BufferProcessor):
 
         if self._auto_clear:
             self._buffer.clear()
-            
-        print("label:", label, "confidence:", confidence, "linearity:", linearity, "displacement:", displacement, "vx:", vx, "vy:", vy, "total_variance:", total_variance)
+
+        if label != "NONE":
+            self._cooldown_frames = self._skip_frames_after_detection
 
         return DynamicGestureDetection(
             label=label,

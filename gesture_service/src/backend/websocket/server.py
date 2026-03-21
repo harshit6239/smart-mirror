@@ -180,6 +180,7 @@ class GestureWebSocketServer:
             return
 
         payload = GesturePayload(
+            gesture_type='dynamic',
             gesture=detection.label,
             confidence=detection.confidence,
         )
@@ -201,7 +202,11 @@ class GestureWebSocketServer:
 
         self._last_static_gesture = gesture
         self._last_static_time = now
-        payload = GesturePayload(gesture=gesture, confidence=confidence)
+        payload = GesturePayload(
+            gesture_type='static',
+            gesture=gesture,
+            confidence=confidence
+        )
         self._schedule_async(self.broadcast_gesture(payload))
 
     def _schedule_async(self, coro: Awaitable[Any]) -> None:

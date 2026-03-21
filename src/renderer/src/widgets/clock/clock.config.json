@@ -1,0 +1,29 @@
+{
+  "id": "",
+  "widget_name": "clock",
+  "widget_label": "Clock",
+  "widget_description": "Displays the current time and date.",
+  "setting": {
+    "time_format": {
+      "type": "select",
+      "label": "Time Format",
+      "options": [
+        { "value": "12", "label": "12-hour" },
+        { "value": "24", "label": "24-hour" }
+      ],
+      "default": "24"
+    },
+    "show_date": {
+      "type": "checkbox",
+      "label": "Show Date",
+      "default": true
+    },
+    "font_size": {
+      "type": "number",
+      "label": "Font Size",
+      "default": 48,
+      "min": 10,
+      "max": 200
+    }
+  }
+}

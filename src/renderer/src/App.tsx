@@ -1,29 +1,35 @@
-import { useEffect } from 'react'
-import ConnectionStatus from './components/ConnectionStatus'
+import { useEffect, useState } from 'react'
+import SetupPage from './pages/SetupPage'
+import MirrorPage from './pages/MirrorPage'
 
 function App(): React.JSX.Element {
-  const ipcRenderer = window.electron.ipcRenderer
+  const [wifiConfigured, setWifiConfigured] = useState<boolean | null>(null)
 
   useEffect(() => {
-    const cleanup = window.api.onGesture((data) => {
-      console.log('Gesture data received in renderer:', data)
+    // Apply theme from config on load, then watch for changes
+    window.config.get().then((cfg) => {
+      document.documentElement.dataset.theme = cfg.settings.theme
+      setWifiConfigured(cfg.wifi.configured)
     })
 
-    return cleanup
+    const unsubTheme = window.config.onChange((cfg) => {
+      document.documentElement.dataset.theme = cfg.settings.theme
+    })
+
+    // Transition immediately when wifi-connected fires from main process
+    const unsubWifi = window.api.onWifiConnected(() => setWifiConfigured(true))
+    return () => {
+      unsubTheme()
+      unsubWifi()
+    }
   }, [])
 
-  const sendGesture = (): void => {
-    const gesture = { type: 'gesture', name: 'swipe-right' }
-    ipcRenderer.send('send-gesture', JSON.stringify(gesture))
+  if (wifiConfigured === null) {
+    // Brief loading — avoid flash
+    return <div className="min-h-screen bg-black" />
   }
 
-  return (
-    <>
-      <ConnectionStatus />
-      <div className="">Powered by electron-vite</div>
-      <button onClick={sendGesture}>send</button>
-    </>
-  )
+  return wifiConfigured ? <MirrorPage /> : <SetupPage />
 }
 
 export default App

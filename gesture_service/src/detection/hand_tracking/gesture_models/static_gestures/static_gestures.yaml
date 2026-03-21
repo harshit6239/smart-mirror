@@ -1,6 +1,6 @@
 gestures:
-  - THUMBS_UP
-  - THUMBS_DOWN
-  - FIST
+  # - THUMBS_UP
+  # - THUMBS_DOWN
+  # - FIST
   - OPEN_PALM
   - POINT_INDEX

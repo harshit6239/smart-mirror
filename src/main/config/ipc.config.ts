@@ -1,12 +1,3 @@
-import { WebSocketService } from '../services/websocket.service'
-
-export default function ipcConfig(ipcMain: Electron.IpcMain, wsService: WebSocketService): void {
-  ipcMain.on('ping', () => {
-    console.log('pong')
-  })
-
-  ipcMain.on('send-gesture', (_event, gestureData: string) => {
-    console.log('Gesture data received from renderer:', gestureData)
-    wsService.sendMessage(gestureData)
-  })
+export default function ipcConfig(_ipcMain: Electron.IpcMain): void {
+  // Gesture IPC wired up in Phase 5
 }

@@ -1,187 +1,124 @@
 import { BrowserWindow } from 'electron'
 import WebSocket from 'ws'
 
-export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error' | 'retrying'
+/** Matches GesturePayload from the Python gesture service */
+interface GestureMessage {
+  type: 'gesture'
+  gesture_type: 'dynamic' | 'static'
+  gesture: string
+  confidence: number
+  timestamp: string
+}
 
-export class WebSocketService {
+const INITIAL_RECONNECT_MS = 3_000
+const MAX_RECONNECT_MS = 30_000
+const RECONNECT_DECAY = 1.5
+
+export class GestureWebSocketClient {
   private ws: WebSocket | null = null
-  private url: string
-  private reconnectInterval = 3000 // 3 seconds
-  private maxReconnectInterval = 30000 // 30 seconds
-  private reconnectDecay = 1.5
-  private currentReconnectInterval = this.reconnectInterval
-  private reconnectTimer: NodeJS.Timeout | null = null
-  private isIntentionalDisconnect = false
-  private connectionState: ConnectionState = 'disconnected'
-  private reconnectAttempts = 0
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private nextReconnectMs = INITIAL_RECONNECT_MS
+  private stopped = false
 
-  constructor(url: string) {
-    this.url = url
+  /** Optional callback invoked for every validated gesture, before renderer broadcast. */
+  onGesture: ((payload: GestureMessage) => void) | null = null
+
+  constructor(private readonly url: string) {}
+
+  get connected(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN
   }
 
-  connect(): void {
-    this.isIntentionalDisconnect = false
-    this.reconnectAttempts = 0
-    this.currentReconnectInterval = this.reconnectInterval
-    this.attemptConnection()
+  start(): void {
+    this.stopped = false
+    this.nextReconnectMs = INITIAL_RECONNECT_MS
+    this.connect()
   }
 
-  private attemptConnection(): void {
-    if (this.isIntentionalDisconnect) {
-      return
-    }
+  stop(): void {
+    this.stopped = true
+    this.clearReconnectTimer()
+    this.closeSocket()
+  }
 
-    this.updateConnectionState('connecting')
-    console.log(`Attempting to connect to WebSocket server at ${this.url}...`)
+  private connect(): void {
+    if (this.stopped) return
 
-    try {
-      // Clean up existing connection if any
-      if (this.ws) {
-        this.ws.onopen = null
-        this.ws.onclose = null
-        this.ws.onerror = null
-        this.ws.onmessage = null
-        this.ws.close()
-        this.ws = null
+    console.log(`[gesture-ws] Connecting to ${this.url}`)
+
+    const ws = new WebSocket(this.url)
+    this.ws = ws
+
+    ws.once('open', () => {
+      console.log('[gesture-ws] Connected')
+      this.nextReconnectMs = INITIAL_RECONNECT_MS
+    })
+
+    ws.on('message', (raw) => {
+      let msg: unknown
+      try {
+        msg = JSON.parse(raw.toString())
+      } catch {
+        return
       }
+      if (!isGestureMessage(msg)) return
+      const serialised = JSON.stringify(msg)
+      this.broadcastToRenderers(serialised)
+      this.onGesture?.(msg)
+    })
 
-      this.ws = new WebSocket(this.url)
-
-      this.ws.onopen = (): void => {
-        console.log('✓ WebSocket connection established')
-        this.reconnectAttempts = 0
-        this.currentReconnectInterval = this.reconnectInterval
-        this.updateConnectionState('connected')
+    // 'close' always fires after 'error', so schedule reconnect only here
+    ws.once('close', () => {
+      this.ws = null
+      if (!this.stopped) {
+        console.log(`[gesture-ws] Disconnected — retrying in ${this.nextReconnectMs}ms`)
+        this.scheduleReconnect()
       }
+    })
 
-      this.ws.onmessage = (event): void => {
-        const gestureData = event.data.toString()
-        console.log('Gesture data received:', gestureData)
-        this.broadcastToRenderers('gesture-event', gestureData)
+    ws.once('error', (err) => {
+      // Just log — 'close' fires immediately after and handles the reconnect
+      console.error(`[gesture-ws] Error: ${err.message}`)
+    })
+  }
+
+  private broadcastToRenderers(payload: string): void {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('gesture-event', payload)
       }
-
-      this.ws.onclose = (event): void => {
-        console.log('WebSocket connection closed', event.code, event.reason)
-        this.ws = null
-
-        if (!this.isIntentionalDisconnect && !this.reconnectTimer) {
-          // Only reconnect if not already scheduled
-          this.updateConnectionState('retrying')
-          this.scheduleReconnect()
-        } else if (this.isIntentionalDisconnect) {
-          this.updateConnectionState('disconnected')
-        }
-      }
-
-      this.ws.onerror = (error): void => {
-        console.error('WebSocket error:', error)
-        this.updateConnectionState('error')
-        // Close the connection manually to ensure onclose is called
-        // In some cases, onclose might not fire automatically after onerror
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this.ws.close()
-        } else if (!this.isIntentionalDisconnect && !this.reconnectTimer) {
-          // If connection never opened, schedule reconnect directly
-          this.scheduleReconnect()
-        }
-      }
-    } catch (error) {
-      console.error('Failed to create WebSocket:', error)
-      this.updateConnectionState('error')
-      this.scheduleReconnect()
     }
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer)
-      this.reconnectTimer = null
-    }
-
-    this.reconnectAttempts++
-
-    // Update state to retrying before scheduling
-    this.updateConnectionState('retrying')
-
-    console.log(
-      `Reconnecting in ${this.currentReconnectInterval / 1000}s (attempt ${this.reconnectAttempts})...`
-    )
-
-    // Broadcast the retry state with the interval
-    this.broadcastToRenderers(
-      'websocket-state',
-      JSON.stringify({
-        state: 'retrying',
-        attempts: this.reconnectAttempts,
-        nextRetryIn: this.currentReconnectInterval
-      })
-    )
-
+    this.clearReconnectTimer()
     this.reconnectTimer = setTimeout(() => {
-      // Increase reconnect interval with exponential backoff for next time
-      this.currentReconnectInterval = Math.min(
-        this.currentReconnectInterval * this.reconnectDecay,
-        this.maxReconnectInterval
-      )
-      this.attemptConnection()
-    }, this.currentReconnectInterval)
+      this.reconnectTimer = null
+      this.nextReconnectMs = Math.min(this.nextReconnectMs * RECONNECT_DECAY, MAX_RECONNECT_MS)
+      this.connect()
+    }, this.nextReconnectMs)
   }
 
-  private updateConnectionState(state: ConnectionState): void {
-    this.connectionState = state
-    console.log(`Connection state: ${state} (attempt ${this.reconnectAttempts})`)
-
-    // Always broadcast state changes
-    this.broadcastToRenderers(
-      'websocket-state',
-      JSON.stringify({
-        state,
-        attempts: this.reconnectAttempts,
-        nextRetryIn: state === 'retrying' ? this.currentReconnectInterval : 0
-      })
-    )
-  }
-
-  getConnectionState(): ConnectionState {
-    return this.connectionState
-  }
-
-  sendMessage(message: string): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(message)
-    } else {
-      console.warn('Cannot send message: WebSocket not connected')
-    }
-  }
-
-  private broadcastToRenderers(channel: string, data: string): void {
-    const windows = BrowserWindow.getAllWindows()
-    console.log(`Broadcasting to ${windows.length} window(s):`, channel, data)
-
-    windows.forEach((win) => {
-      if (win && !win.isDestroyed()) {
-        win.webContents.send(channel, data)
-      }
-    })
-  }
-
-  disconnect(): void {
-    this.isIntentionalDisconnect = true
-
-    if (this.reconnectTimer) {
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+  }
 
-    if (this.ws) {
-      this.ws.onopen = null
-      this.ws.onclose = null
-      this.ws.onerror = null
-      this.ws.onmessage = null
-      this.ws.close()
+  private closeSocket(): void {
+    if (this.ws !== null) {
+      this.ws.removeAllListeners()
+      this.ws.terminate()
       this.ws = null
     }
-
-    this.updateConnectionState('disconnected')
   }
+}
+
+function isGestureMessage(msg: unknown): msg is GestureMessage {
+  return (
+    typeof msg === 'object' &&
+    msg !== null &&
+    (msg as Record<string, unknown>)['type'] === 'gesture'
+  )
 }

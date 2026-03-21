@@ -12,6 +12,7 @@ class GesturePayload(BaseModel):
     """Structure for gesture data broadcast to WebSocket clients."""
 
     type: Literal["gesture"] = Field(default="gesture")
+    gesture_type: Literal["dynamic", "static"] = Field(...)
     gesture: str = Field(..., description="Canonical name of the detected gesture.")
     confidence: float = Field(
         default=0.0,

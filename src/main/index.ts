@@ -1,11 +1,23 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
+import { readFileSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import ipcConfig from './config/ipc.config'
-import { WebSocketService } from './services/websocket.service'
+import { CompanionServer } from './services/companion-server.service'
+import { WifiService } from './services/wifi.service'
+import { GestureWebSocketClient } from './services/websocket.service'
+import { store, getConfig, setConfig, type Page, type WidgetInstance } from './config/app-config'
 
-const wsService = new WebSocketService(import.meta.env.MAIN_VITE_WS_URL)
+const DEFAULT_PAGES: Page[] = [
+  { id: 'page-home', name: 'Home', widgetIds: [] },
+  { id: 'page-media', name: 'Media', widgetIds: [] },
+  { id: 'page-info', name: 'Info', widgetIds: [] }
+]
+
+const wifiService = new WifiService()
+const companionServer = new CompanionServer(wifiService)
+const gestureClient = new GestureWebSocketClient('ws://localhost:5001')
 
 function createWindow(): void {
   // Create the browser window.
@@ -27,19 +39,6 @@ function createWindow(): void {
     if (is.dev) {
       mainWindow.webContents.openDevTools()
     }
-  })
-
-  // Send current WebSocket state when renderer is ready
-  mainWindow.webContents.on('did-finish-load', () => {
-    const state = wsService.getConnectionState()
-    mainWindow.webContents.send(
-      'websocket-state',
-      JSON.stringify({
-        state,
-        attempts: 0,
-        nextRetryIn: 0
-      })
-    )
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -71,25 +70,132 @@ app.whenReady().then(() => {
   })
 
   // IPC configuration
-  ipcConfig(ipcMain, wsService)
+  ipcConfig(ipcMain)
 
-  // Handle request for current WebSocket state
-  ipcMain.handle('get-websocket-state', () => {
-    const state = wsService.getConnectionState()
-    return JSON.stringify({
-      state,
-      attempts: 0,
-      nextRetryIn: 0
+  // ── Config IPC ────────────────────────────────────────────────────────────
+  ipcMain.handle('config:get', () => getConfig())
+
+  ipcMain.handle('config:set', (_event, key: string, value: unknown) => {
+    setConfig(key, value)
+  })
+
+  // ── System Stats IPC ──────────────────────────────────────────────────────
+  ipcMain.handle('system:stats', async () => {
+    if (process.platform !== 'linux') {
+      return { cpuPercent: null, memPercent: null, tempC: null }
+    }
+
+    const readCpuNums = (): number[] => {
+      const line = readFileSync('/proc/stat', 'utf-8').split('\n')[0]
+      return line.split(/\s+/).slice(1).map(Number)
+    }
+
+    let cpuPercent: number | null = null
+    try {
+      const before = readCpuNums()
+      await new Promise((r) => setTimeout(r, 200))
+      const after = readCpuNums()
+      const idleDiff = after[3] - before[3]
+      const totalDiff = after.reduce((a, b) => a + b, 0) - before.reduce((a, b) => a + b, 0)
+      cpuPercent = totalDiff === 0 ? 0 : Math.round(100 * (1 - idleDiff / totalDiff))
+    } catch {
+      /* leave null */
+    }
+
+    let memPercent: number | null = null
+    try {
+      const memInfo = readFileSync('/proc/meminfo', 'utf-8')
+      const getVal = (key: string): number => {
+        const m = memInfo.match(new RegExp(`^${key}:\\s+(\\d+)`, 'm'))
+        return m ? parseInt(m[1]) : 0
+      }
+      const total = getVal('MemTotal')
+      const available = getVal('MemAvailable')
+      memPercent = total === 0 ? 0 : Math.round(100 * (1 - available / total))
+    } catch {
+      /* leave null */
+    }
+
+    let tempC: number | null = null
+    try {
+      const raw = readFileSync('/sys/class/thermal/thermal_zone0/temp', 'utf-8')
+      tempC = Math.round(parseInt(raw.trim()) / 1000)
+    } catch {
+      /* not available on non-Pi */
+    }
+
+    return { cpuPercent, memPercent, tempC }
+  })
+
+  // Broadcast any store change to renderer windows AND companion WebSocket clients
+  store.onDidAnyChange((newValue) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send('config:changed', newValue)
     })
+    companionServer.broadcastEvent('config-changed', newValue)
+  })
+
+  // ── Page change IPC (renderer → main → companion WS) ──────────────────────
+  ipcMain.on('page:changed', (_event, pageIndex: number) => {
+    companionServer.setCurrentPage(pageIndex)
   })
 
   createWindow()
 
-  // Initialize WebSocket service after window is created
-  // This ensures the renderer can receive state updates
-  setTimeout(() => {
-    wsService.connect()
-  }, 100)
+  // ── Seed default pages on first run ──────────────────────────────────────
+  if (getConfig().pages.length === 0) {
+    setConfig('pages', DEFAULT_PAGES)
+  }
+
+  // ── Seed Phase 4 widget instances (clock + system-stats) ─────────────────
+  if (!getConfig().widgetInstances['instance-clock-1']) {
+    const clockInstance: WidgetInstance = {
+      id: 'instance-clock-1',
+      widgetId: 'clock',
+      version: '1.0.0',
+      config: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, use24h: true },
+      layout: { col: 1, row: 1, colSpan: 7, rowSpan: 3 }
+    }
+    const statsInstance: WidgetInstance = {
+      id: 'instance-stats-1',
+      widgetId: 'system-stats',
+      version: '1.0.0',
+      config: {},
+      layout: { col: 9, row: 1, colSpan: 4, rowSpan: 3 }
+    }
+    setConfig('widgetInstances', {
+      'instance-clock-1': clockInstance,
+      'instance-stats-1': statsInstance
+    })
+    const pages = getConfig().pages
+    if (pages.length > 0) {
+      const updated = pages.map((p, i) =>
+        i === 0 ? { ...p, widgetIds: ['instance-clock-1', 'instance-stats-1'] } : p
+      )
+      setConfig('pages', updated)
+    }
+  }
+
+  // ── WiFi provisioning ────────────────────────────────────────────────────
+  // On non-Linux dev machines, skip provisioning so the app loads directly.
+  if (process.platform !== 'linux' && !getConfig().wifi.configured) {
+    setConfig('wifi.configured', true)
+  }
+
+  void companionServer.start()
+  gestureClient.start()
+  gestureClient.onGesture = (payload) => companionServer.broadcastEvent('gesture', payload)
+  companionServer.setGestureStatusProvider(() => gestureClient.connected)
+
+  if (!getConfig().wifi.configured) {
+    void wifiService.startHotspot()
+  }
+
+  companionServer.setOnWifiConnected(() => {
+    void wifiService.stopHotspot()
+    setConfig('wifi.configured', true)
+    BrowserWindow.getAllWindows().forEach((win) => win.webContents.send('wifi-connected'))
+  })
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
@@ -105,7 +211,8 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
-  wsService.disconnect()
+  gestureClient.stop()
+  void companionServer.stop()
 })
 
 // In this file you can include the rest of your app's specific main process
