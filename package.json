@@ -28,7 +28,9 @@
     "@tailwindcss/vite": "^4.1.17",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.3.9",
+    "ical.js": "^2.2.1",
     "qrcode": "^1.5.4",
+    "react-grid-layout": "^2.2.2",
     "react-router-dom": "^7.13.1",
     "tailwindcss": "^4.1.17",
     "ws": "^8.18.3"

@@ -19,7 +19,22 @@ const api = {
   },
   notifyPageChange: (pageIndex: number): void => {
     ipcRenderer.send('page:changed', pageIndex)
-  }
+  },
+  getCompanionUrl: (): Promise<string> => ipcRenderer.invoke('companion:url'),
+  onNotification: (
+    cb: (note: { type?: string; title: string; body: string; durationMs?: number }) => void
+  ): (() => void) => {
+    const listener = (_: unknown, note: unknown): void =>
+      cb(note as { type?: string; title: string; body: string; durationMs?: number })
+    ipcRenderer.on('notification', listener)
+    return () => ipcRenderer.removeListener('notification', listener)
+  },
+  fetchIcal: (url: string): Promise<string> => ipcRenderer.invoke('calendar:fetch-ical', url),
+  fetchHeadlines: (url: string): Promise<string> => ipcRenderer.invoke('news:fetch-headlines', url),
+  spotifyNowPlaying: (instanceId: string): Promise<import('./index.d').SpotifyNowPlayingResult> =>
+    ipcRenderer.invoke('spotify:now-playing', instanceId) as Promise<
+      import('./index.d').SpotifyNowPlayingResult
+    >
 }
 
 const config = {

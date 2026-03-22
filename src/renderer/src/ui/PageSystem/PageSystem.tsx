@@ -4,6 +4,7 @@ import { useConfig } from '../../hooks/useConfig'
 import { useGesture } from '../../hooks/useGesture'
 import PageDots from './PageDots'
 import WidgetGrid from '../WidgetGrid/WidgetGrid'
+import CompanionQR from '../../components/CompanionQR'
 
 const DEFAULT_PAGES: Page[] = [
   { id: 'page-home', name: 'Home', widgetIds: [] },
@@ -70,6 +71,9 @@ export default function PageSystem(): React.JSX.Element {
       <div className="flex justify-center pb-4">
         <PageDots count={resolvedPages.length} active={activeIndex} />
       </div>
+
+      {/* Companion QR — persistent bottom-right overlay */}
+      <CompanionQR />
     </div>
   )
 }

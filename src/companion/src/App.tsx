@@ -1,7 +1,10 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import HomePage from './pages/HomePage'
+import LayoutEditor from './pages/LayoutEditor'
+import WidgetConfig from './pages/WidgetConfig'
 import SystemSettings from './pages/SystemSettings'
 import WifiSetupPage from './pages/WifiSetupPage'
+import NotificationsPage from './pages/NotificationsPage'
 
 const navClass = ({ isActive }: { isActive: boolean }): string =>
   isActive ? 'text-sky-400 font-semibold' : 'text-slate-400 hover:text-white'
@@ -19,6 +22,12 @@ export default function App(): React.JSX.Element {
             <NavLink to="/settings" className={navClass}>
               Settings
             </NavLink>
+            <NavLink to="/layout" className={navClass}>
+              Layout
+            </NavLink>
+            <NavLink to="/notifications" className={navClass}>
+              Notify
+            </NavLink>
             <NavLink to="/wifi" className={navClass}>
               WiFi
             </NavLink>
@@ -29,6 +38,9 @@ export default function App(): React.JSX.Element {
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/settings" element={<SystemSettings />} />
+            <Route path="/layout" element={<LayoutEditor />} />
+            <Route path="/widget-config/:instanceId" element={<WidgetConfig />} />
+            <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/wifi" element={<WifiSetupPage />} />
           </Routes>
         </main>

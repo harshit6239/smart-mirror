@@ -1,10 +1,13 @@
 import http from 'http'
+import https from 'https'
+import crypto from 'crypto'
+import os from 'os'
 import { existsSync, readFileSync } from 'fs'
 import { join, extname, resolve as resolvePath } from 'path'
 import { WebSocketServer, WebSocket } from 'ws'
 import { app, BrowserWindow } from 'electron'
 import type { WifiService } from './wifi.service'
-import { getConfig, setConfig, type AppConfig } from '../config/app-config'
+import { store, getConfig, setConfig, type AppConfig } from '../config/app-config'
 
 export const COMPANION_PORT = 8080
 
@@ -14,6 +17,11 @@ export class CompanionServer {
   private onWifiConnected: (() => void) | null = null
   private currentPageIndex = 0
   private gestureStatusProvider: (() => boolean) | null = null
+  /** Pending OAuth state tokens: state hex → { instanceId, redirectUri }. Auto-expire after 10 min. */
+  private readonly spotifyPendingStates = new Map<
+    string,
+    { instanceId: string; redirectUri: string }
+  >()
 
   constructor(private readonly wifi: WifiService) {}
 
@@ -82,7 +90,11 @@ export class CompanionServer {
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     // ── Auth middleware slot (passthrough — swap for real auth without touching routes) ──
-    if (!this.auth()) return
+    if (!this.auth()) {
+      res.writeHead(401, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Unauthorized' }))
+      return
+    }
 
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
@@ -119,8 +131,12 @@ export class CompanionServer {
       const body = await this.readBody(req)
       try {
         const payload = JSON.parse(body) as Partial<Pick<AppConfig, 'pages' | 'widgetInstances'>>
-        if (payload.pages) setConfig('pages', payload.pages)
-        if (payload.widgetInstances) setConfig('widgetInstances', payload.widgetInstances)
+        // Atomic write — fires onDidAnyChange once, preventing a partial-state flicker
+        store.store = {
+          ...getConfig(),
+          ...(payload.pages !== undefined && { pages: payload.pages }),
+          ...(payload.widgetInstances !== undefined && { widgetInstances: payload.widgetInstances })
+        }
         this.sendJson(res, { success: true })
       } catch {
         this.badRequest(res, 'Invalid JSON body')
@@ -147,15 +163,26 @@ export class CompanionServer {
       if (method === 'PUT') {
         const body = await this.readBody(req)
         try {
-          const patch = JSON.parse(body) as Partial<AppConfig['widgetInstances'][string]>
+          // Destructure `_instance` out so it is never written raw into the stored record.
+          const { config: newConfig, _instance } = JSON.parse(body) as {
+            config?: Record<string, unknown>
+            _instance?: AppConfig['widgetInstances'][string]
+          }
           const existing = instances[instanceId]
-          if (!existing) {
+          // Upsert: if the instance isn't in the store yet (e.g. the user navigated to config
+          // before saving the layout), use the full instance passed from the client as the base.
+          const base = existing ?? _instance
+          if (!base) {
             this.notFound(res)
             return
           }
           setConfig('widgetInstances', {
             ...instances,
-            [instanceId]: { ...existing, ...patch, id: instanceId }
+            [instanceId]: {
+              ...base,
+              ...(newConfig !== undefined ? { config: newConfig } : {}),
+              id: instanceId
+            }
           })
           this.sendJson(res, { success: true })
         } catch {
@@ -193,6 +220,10 @@ export class CompanionServer {
           title: string
           body: string
           durationMs?: number
+        }
+        if (typeof note.title !== 'string' || !note.title.trim()) {
+          this.badRequest(res, '"title" is required')
+          return
         }
         this.broadcastEvent('notification', note)
         BrowserWindow.getAllWindows().forEach((win) => win.webContents.send('notification', note))
@@ -239,6 +270,25 @@ export class CompanionServer {
         }))
       )
       this.sendJson(res, { success: true, removed: removedIds.length })
+      return
+    }
+
+    // ── GET /api/system/info ─────────────────────────────────────────────────
+    if (url === '/api/system/info' && method === 'GET') {
+      const cpus = os.cpus()
+      this.sendJson(res, {
+        uptime: Math.floor(process.uptime()),
+        platform: process.platform,
+        arch: process.arch,
+        nodeVersion: process.versions.node,
+        electronVersion: process.versions['electron'] ?? 'unknown',
+        appVersion: app.getVersion(),
+        hostname: os.hostname(),
+        cpuModel: cpus[0]?.model ?? 'unknown',
+        cpuCount: cpus.length,
+        freeMemMb: Math.round(os.freemem() / 1024 / 1024),
+        totalMemMb: Math.round(os.totalmem() / 1024 / 1024)
+      })
       return
     }
 
@@ -293,6 +343,122 @@ export class CompanionServer {
       return
     }
 
+    // ── GET /spotify/auth?instanceId=... ─────────────────────────────────────
+    // Builds the Spotify authorize URL for the given widget instance and redirects.
+    // The Host header of the incoming request is used to derive the redirect URI so
+    // the callback URL matches regardless of whether using localhost or a LAN IP.
+    if (url.startsWith('/spotify/auth') && method === 'GET') {
+      const params = new URL(url, 'http://x').searchParams
+      const instanceId = params.get('instanceId') ?? ''
+      const instance = getConfig().widgetInstances[instanceId]
+      if (!instance) {
+        this.notFound(res)
+        return
+      }
+
+      const clientId = (instance.config.clientId as string | undefined) || ''
+      if (!clientId) {
+        res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(
+          '<h2>Error: Client ID not configured.</h2><p>Enter your Spotify Client ID in the widget config and save, then try again. <a href="javascript:history.back()">Go back</a></p>'
+        )
+        return
+      }
+
+      const state = crypto.randomBytes(16).toString('hex')
+      // Always use 127.0.0.1 as the redirect host — Spotify allows HTTP only for localhost/127.0.0.1.
+      // The user must complete the Connect step from a browser on the mirror device itself
+      // (http://127.0.0.1:8080) rather than from the phone over the LAN.
+      const redirectUri = `http://127.0.0.1:${COMPANION_PORT}/spotify/callback`
+      this.spotifyPendingStates.set(state, { instanceId, redirectUri })
+      // Auto-expire state after 10 minutes to prevent stale entries
+      setTimeout(() => this.spotifyPendingStates.delete(state), 10 * 60 * 1000)
+
+      const authUrl = new URL('https://accounts.spotify.com/authorize')
+      authUrl.searchParams.set('client_id', clientId)
+      authUrl.searchParams.set('response_type', 'code')
+      authUrl.searchParams.set('redirect_uri', redirectUri)
+      authUrl.searchParams.set('scope', 'user-read-currently-playing user-read-playback-state')
+      authUrl.searchParams.set('state', state)
+
+      res.writeHead(302, { Location: authUrl.toString() })
+      res.end()
+      return
+    }
+
+    // ── GET /spotify/callback?code=...&state=... ──────────────────────────────
+    // Spotify redirects here after the user authorises. Exchanges the code for tokens,
+    // saves them into the widget instance config, then redirects to the companion config page.
+    if (url.startsWith('/spotify/callback') && method === 'GET') {
+      const params = new URL(url, 'http://x').searchParams
+      const code = params.get('code')
+      const state = params.get('state') ?? ''
+      const oauthError = params.get('error')
+
+      const pending = this.spotifyPendingStates.get(state)
+      this.spotifyPendingStates.delete(state) // consume — single use
+
+      if (!pending) {
+        res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(
+          '<h2>Invalid or expired OAuth state.</h2><p>Please start the connection flow again from the companion app.</p>'
+        )
+        return
+      }
+
+      const instance = getConfig().widgetInstances[pending.instanceId]
+
+      if (oauthError || !code || !instance) {
+        res.writeHead(302, {
+          Location: `/widget-config/${encodeURIComponent(pending.instanceId)}?spotify=error`
+        })
+        res.end()
+        return
+      }
+
+      const clientId = (instance.config.clientId as string | undefined) || ''
+      const clientSecret = (instance.config.clientSecret as string | undefined) || ''
+
+      if (!clientId || !clientSecret) {
+        res.writeHead(302, {
+          Location: `/widget-config/${encodeURIComponent(pending.instanceId)}?spotify=error`
+        })
+        res.end()
+        return
+      }
+
+      try {
+        const tokens = await this.spotifyExchangeCode(
+          code,
+          pending.redirectUri,
+          clientId,
+          clientSecret
+        )
+        setConfig('widgetInstances', {
+          ...getConfig().widgetInstances,
+          [pending.instanceId]: {
+            ...instance,
+            config: {
+              ...instance.config,
+              accessToken: tokens.access_token,
+              // Spotify may not return a new refresh_token on every exchange; keep the old one if absent
+              refreshToken: tokens.refresh_token ?? (instance.config.refreshToken as string) ?? ''
+            }
+          }
+        })
+        res.writeHead(302, {
+          Location: `/widget-config/${encodeURIComponent(pending.instanceId)}?spotify=connected`
+        })
+        res.end()
+      } catch {
+        res.writeHead(302, {
+          Location: `/widget-config/${encodeURIComponent(pending.instanceId)}?spotify=error`
+        })
+        res.end()
+      }
+      return
+    }
+
     // Serve companion SPA (falls back to built-in setup page if not yet built)
     await this.serveStatic(req, res)
   }
@@ -301,6 +467,61 @@ export class CompanionServer {
   // Passthrough now — replace with real token check later without touching routes
   private auth(): boolean {
     return true
+  }
+
+  // ── Spotify: exchange authorization code for access + refresh tokens ──────
+  private spotifyExchangeCode(
+    code: string,
+    redirectUri: string,
+    clientId: string,
+    clientSecret: string
+  ): Promise<{ access_token: string; refresh_token?: string }> {
+    return new Promise((resolve, reject) => {
+      const body = new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri
+      }).toString()
+      const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
+      const req = https.request(
+        {
+          hostname: 'accounts.spotify.com',
+          path: '/api/token',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Authorization: `Basic ${auth}`,
+            'Content-Length': Buffer.byteLength(body)
+          }
+        },
+        (res) => {
+          let data = ''
+          res.on('data', (chunk: Buffer) => {
+            data += chunk.toString('utf-8')
+          })
+          res.on('end', () => {
+            try {
+              const parsed = JSON.parse(data) as {
+                access_token?: string
+                refresh_token?: string
+                error?: string
+              }
+              if (parsed.error || !parsed.access_token) {
+                reject(new Error(parsed.error ?? 'No access_token in Spotify response'))
+              } else {
+                resolve({ access_token: parsed.access_token, refresh_token: parsed.refresh_token })
+              }
+            } catch {
+              reject(new Error('Failed to parse Spotify token response'))
+            }
+          })
+          res.on('error', reject)
+        }
+      )
+      req.on('error', reject)
+      req.write(body)
+      req.end()
+    })
   }
 
   // ── Static file serving ───────────────────────────────────────────────────
@@ -361,10 +582,17 @@ export class CompanionServer {
   }
 
   private readBody(req: http.IncomingMessage): Promise<string> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let body = ''
-      req.on('data', (chunk: Buffer) => (body += chunk.toString()))
+      req.on('data', (chunk: Buffer) => {
+        body += chunk.toString()
+        if (body.length > 1_048_576) {
+          req.destroy()
+          reject(new Error('Request body too large'))
+        }
+      })
       req.on('end', () => resolve(body))
+      req.on('error', reject)
     })
   }
 

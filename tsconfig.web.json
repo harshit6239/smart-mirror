@@ -11,12 +11,11 @@
   "compilerOptions": {
     "composite": true,
     "jsx": "react-jsx",
-    "ignoreDeprecations": "6.0",
+    "ignoreDeprecations": "5.0",
     "outDir": "out/web",
-    "baseUrl": ".",
     "paths": {
       "@renderer/*": [
-        "src/renderer/src/*"
+        "./src/renderer/src/*"
       ]
     }
   }

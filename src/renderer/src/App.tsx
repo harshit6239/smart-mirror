@@ -18,9 +18,15 @@ function App(): React.JSX.Element {
 
     // Transition immediately when wifi-connected fires from main process
     const unsubWifi = window.api.onWifiConnected(() => setWifiConfigured(true))
+
+    const unsubNotif = window.api.onNotification((note) => {
+      console.log('[notification]', note)
+    })
+
     return () => {
       unsubTheme()
       unsubWifi()
+      unsubNotif()
     }
   }, [])
 

@@ -544,3 +544,11 @@ Run these after each phase before starting the next:
 | P14 | Scheduled config override fires and reverts on cron               |
 | P15 | Notification overlay shows, auto-dismisses, queues correctly      |
 | P16 | OTA update detected, companion banner, restart applies update     |
+
+---
+
+## Post-Completion Tasks
+
+> Only do these **after every phase above is fully implemented and tested.**
+
+- [ ] **Widget Authoring Guide** — Finalize `docs/WIDGET_AUTHORING.md` using the completed codebase as the source of truth. Verify all code examples compile and match actual file paths, type names, and API signatures. Add any patterns or gotchas discovered during implementation that weren't anticipated in the plan.
