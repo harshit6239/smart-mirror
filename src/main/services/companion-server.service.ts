@@ -7,6 +7,7 @@ import { join, extname, resolve as resolvePath } from 'path'
 import { WebSocketServer, WebSocket } from 'ws'
 import { app, BrowserWindow } from 'electron'
 import type { WifiService } from './wifi.service'
+import type { WidgetRegistryService } from './widget-registry.service'
 import { store, getConfig, setConfig, type AppConfig } from '../config/app-config'
 
 export const COMPANION_PORT = 8080
@@ -17,6 +18,7 @@ export class CompanionServer {
   private onWifiConnected: (() => void) | null = null
   private currentPageIndex = 0
   private gestureStatusProvider: (() => boolean) | null = null
+  private registryService: WidgetRegistryService | null = null
   /** Pending OAuth state tokens: state hex → { instanceId, redirectUri }. Auto-expire after 10 min. */
   private readonly spotifyPendingStates = new Map<
     string,
@@ -32,6 +34,11 @@ export class CompanionServer {
   /** Supply a function that returns the current gesture connection state. */
   setGestureStatusProvider(fn: () => boolean): void {
     this.gestureStatusProvider = fn
+  }
+
+  /** Attach the widget registry service so install/uninstall routes work. */
+  setRegistryService(service: WidgetRegistryService): void {
+    this.registryService = service
   }
 
   /** Called by main process whenever the active page changes in the renderer. */
@@ -121,8 +128,8 @@ export class CompanionServer {
 
     // ── GET /api/layouts ─────────────────────────────────────────────────────
     if (url === '/api/layouts' && method === 'GET') {
-      const { pages, widgetInstances } = getConfig()
-      this.sendJson(res, { pages, widgetInstances })
+      const { pages, widgetInstances, installedWidgets } = getConfig()
+      this.sendJson(res, { pages, widgetInstances, installedWidgets })
       return
     }
 
@@ -236,16 +243,37 @@ export class CompanionServer {
 
     // ── GET /api/widgets/registry ────────────────────────────────────────────
     if (url === '/api/widgets/registry' && method === 'GET') {
-      this.sendJson(res, getConfig().installedWidgets)
+      const available = this.registryService ? await this.registryService.listWidgets() : []
+      const installed = getConfig().installedWidgets
+      this.sendJson(res, { available, installed })
       return
     }
 
     // ── POST /api/widgets/install ────────────────────────────────────────────
     if (url === '/api/widgets/install' && method === 'POST') {
-      res.writeHead(501, { 'Content-Type': 'application/json' })
-      res.end(
-        JSON.stringify({ error: 'Not implemented — dynamic widget loading wired in Phase 8' })
-      )
+      if (!this.registryService) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Registry service not available' }))
+        return
+      }
+      const body = await this.readBody(req)
+      try {
+        const { id, name, version, bundleUrl } = JSON.parse(body) as {
+          id: string
+          name: string
+          version: string
+          bundleUrl: string
+        }
+        if (!id || !version || !bundleUrl) {
+          this.badRequest(res, 'id, version, and bundleUrl are required')
+          return
+        }
+        await this.registryService.installWidget(id, name ?? id, version, bundleUrl)
+        this.sendJson(res, { success: true })
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e instanceof Error ? e.message : 'Install failed' }))
+      }
       return
     }
 
@@ -269,6 +297,8 @@ export class CompanionServer {
           widgetIds: p.widgetIds.filter((id) => !removedIds.includes(id))
         }))
       )
+      // Also remove from disk + installedWidgets if it was a dynamic widget
+      this.registryService?.uninstallWidget(widgetId)
       this.sendJson(res, { success: true, removed: removedIds.length })
       return
     }

@@ -11,6 +11,8 @@ import { CompanionServer } from './services/companion-server.service'
 import { WifiService } from './services/wifi.service'
 import { GestureWebSocketClient } from './services/websocket.service'
 import { store, getConfig, setConfig, type Page, type WidgetInstance } from './config/app-config'
+import { registerWidgetScheme, handleWidgetProtocol } from './services/widget-protocol'
+import { WidgetRegistryService } from './services/widget-registry.service'
 
 const DEFAULT_PAGES: Page[] = [
   { id: 'page-home', name: 'Home', widgetIds: [] },
@@ -18,8 +20,12 @@ const DEFAULT_PAGES: Page[] = [
   { id: 'page-info', name: 'Info', widgetIds: [] }
 ]
 
+// Register the widget:// custom scheme before the app is ready (required by Electron).
+registerWidgetScheme()
+
 const wifiService = new WifiService()
 const companionServer = new CompanionServer(wifiService)
+const registryService = new WidgetRegistryService()
 const gestureClient = new GestureWebSocketClient('ws://localhost:5001')
 
 // ── Utility: fetch a URL server-side (follows redirects, bypasses renderer CORS) ──
@@ -259,6 +265,12 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
+  // Register widget:// protocol handler (serves dynamic widget bundles from userData)
+  handleWidgetProtocol()
+
+  // Attach registry service to companion server
+  companionServer.setRegistryService(registryService)
+
   // IPC configuration
   ipcConfig(ipcMain)
 
@@ -367,7 +379,24 @@ app.whenReady().then(() => {
       function parseResponse(statusCode: number, body: string): SpotifyResult | null {
         if (statusCode === 204 || (statusCode === 200 && !body.trim())) return { status: 'idle' }
         if (statusCode === 401) return null // signals token expired — caller will refresh
-        if (statusCode !== 200) return { status: 'error', message: `Spotify HTTP ${statusCode}` }
+        if (statusCode !== 200) {
+          // Extract Spotify's own error message if available
+          let detail = `Spotify HTTP ${statusCode}`
+          try {
+            const parsed = JSON.parse(body) as { error?: { message?: string } }
+            if (parsed.error?.message) detail = `Spotify ${statusCode}: ${parsed.error.message}`
+          } catch {
+            /* keep generic */
+          }
+          // 403 = wrong scopes or user not in app's allowlist — re-auth won't help without user action
+          if (statusCode === 403) {
+            return {
+              status: 'error',
+              message: `${detail}. In development mode, add your account to the app's User Management at developer.spotify.com. If already added, disconnect and re-connect Spotify to refresh scopes.`
+            }
+          }
+          return { status: 'error', message: detail }
+        }
         try {
           const data = JSON.parse(body) as {
             is_playing: boolean

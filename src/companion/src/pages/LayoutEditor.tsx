@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { GridLayout, useContainerWidth, noCompactor } from 'react-grid-layout'
 import type { Layout, LayoutItem } from 'react-grid-layout'
@@ -24,6 +24,7 @@ type LocalInstance = {
   config: Record<string, unknown>
   layout: LocalLayout
 }
+type LocalInstalledWidget = { id: string; name: string; version: string; source: string }
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
 type Snapshot = { pages: LocalPage[]; instances: Record<string, LocalInstance> }
@@ -75,6 +76,7 @@ function findFreeSlot(layout: Layout, w: number, h: number): { x: number; y: num
 export default function LayoutEditor(): React.JSX.Element {
   const [pages, setPages] = useState<LocalPage[]>([])
   const [instances, setInstances] = useState<Record<string, LocalInstance>>({})
+  const [installedWidgets, setInstalledWidgets] = useState<LocalInstalledWidget[]>([])
   const [activeTab, setActiveTab] = useState(0)
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [dirty, setDirty] = useState(false)
@@ -87,10 +89,15 @@ export default function LayoutEditor(): React.JSX.Element {
 
   useEffect(() => {
     api
-      .get<{ pages: LocalPage[]; widgetInstances: Record<string, LocalInstance> }>('/api/layouts')
-      .then(({ pages: p, widgetInstances: w }) => {
+      .get<{
+        pages: LocalPage[]
+        widgetInstances: Record<string, LocalInstance>
+        installedWidgets?: LocalInstalledWidget[]
+      }>('/api/layouts')
+      .then(({ pages: p, widgetInstances: w, installedWidgets: iw }) => {
         setPages(p)
         setInstances(w)
+        setInstalledWidgets(iw ?? [])
       })
       .catch(() => {})
   }, [])
@@ -125,6 +132,23 @@ export default function LayoutEditor(): React.JSX.Element {
   const widgetsOnPage = new Set(
     currentPage.widgetIds.map((id) => instances[id]?.widgetId).filter(Boolean)
   )
+
+  // Merge static catalog with dynamically installed widgets.
+  // Installed widgets not already in WIDGET_CATALOG get a minimal catalog entry
+  // so they can be dragged onto pages from the sidebar.
+  const fullCatalog = useMemo(() => {
+    const bundledIds = new Set(WIDGET_CATALOG.map((w) => w.widgetId))
+    const dynamicEntries = installedWidgets
+      .filter((w) => !bundledIds.has(w.id))
+      .map((w) => ({
+        widgetId: w.id,
+        name: w.name,
+        defaultConfig: {},
+        defaultLayout: { col: 1, row: 1, colSpan: 4, rowSpan: 3 },
+        configSchema: {}
+      }))
+    return [...WIDGET_CATALOG, ...dynamicEntries]
+  }, [installedWidgets])
 
   // ── Grid drag/resize ────────────────────────────────────────────────────────
 
@@ -163,7 +187,7 @@ export default function LayoutEditor(): React.JSX.Element {
       showToast('Widget already on this page — remove it first to re-add')
       return
     }
-    const entry = WIDGET_CATALOG.find((w) => w.widgetId === widgetId)
+    const entry = fullCatalog.find((w) => w.widgetId === widgetId)
     if (!entry) return
     const slot = findFreeSlot(rglLayout, entry.defaultLayout.colSpan, entry.defaultLayout.rowSpan)
     if (!slot) {
@@ -172,10 +196,11 @@ export default function LayoutEditor(): React.JSX.Element {
     }
     pushSnapshot()
     const instanceId = `instance-${widgetId}-${Date.now()}`
+    const dynInstalled = installedWidgets.find((w) => w.id === widgetId)
     const inst: LocalInstance = {
       id: instanceId,
       widgetId,
-      version: '1.0.0',
+      version: dynInstalled?.version ?? '1.0.0',
       config: { ...entry.defaultConfig },
       layout: {
         col: slot.x + 1,
@@ -405,7 +430,7 @@ export default function LayoutEditor(): React.JSX.Element {
               .map((id) => instances[id])
               .filter(Boolean)
               .map((inst) => {
-                const meta = WIDGET_CATALOG.find((w) => w.widgetId === inst.widgetId)
+                const meta = fullCatalog.find((w) => w.widgetId === inst.widgetId)
                 return (
                   <div
                     key={inst.id}
@@ -451,7 +476,7 @@ export default function LayoutEditor(): React.JSX.Element {
           </span>
         </div>
         <div className="flex flex-wrap gap-2">
-          {WIDGET_CATALOG.map((w) => {
+          {fullCatalog.map((w) => {
             const isDuplicate = widgetsOnPage.has(w.widgetId)
             const isDisabled = isPageFull || isDuplicate
             return (

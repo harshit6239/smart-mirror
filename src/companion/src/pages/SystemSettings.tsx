@@ -8,6 +8,7 @@ interface Settings {
   brightnessDay: number
   brightnessNight: number
   brightnessSchedule: { dayStart: string; nightStart: string }
+  registryUrl: string
 }
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
@@ -123,6 +124,20 @@ export default function SystemSettings(): React.JSX.Element {
           onChange={(e) => setSchedule('nightStart', e.target.value)}
           className="bg-slate-700 rounded-lg px-3 py-2 text-sm"
         />
+      </Field>
+
+      <Field label="Widget Registry URL">
+        <input
+          type="url"
+          value={form.registryUrl}
+          onChange={(e) => set('registryUrl', e.target.value)}
+          placeholder="https://raw.githubusercontent.com/…/registry.json"
+          className="w-full bg-slate-700 rounded-lg px-3 py-2 text-sm placeholder-slate-500"
+        />
+        <p className="text-xs text-slate-500 mt-1">
+          URL to a GitHub-hosted <code className="bg-slate-800 px-1 rounded">registry.json</code>.
+          Leave blank to disable the widget store.
+        </p>
       </Field>
 
       <button

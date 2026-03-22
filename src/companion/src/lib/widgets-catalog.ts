@@ -225,5 +225,33 @@ export const WIDGET_CATALOG: CatalogEntry[] = [
         required: true
       }
     }
+  },
+  {
+    widgetId: 'stocks',
+    name: 'Crypto / Stocks',
+    defaultConfig: { coins: 'bitcoin,ethereum,solana', currency: 'usd', apiKey: '' },
+    defaultLayout: { col: 7, row: 5, colSpan: 6, rowSpan: 3 },
+    configSchema: {
+      coins: {
+        type: 'string',
+        label: 'Coins',
+        default: 'bitcoin,ethereum,solana',
+        hint: 'Comma-separated CoinGecko IDs — e.g. bitcoin, ethereum, solana, dogecoin, ripple (up to 12)',
+        required: true
+      },
+      currency: {
+        type: 'select',
+        label: 'Currency',
+        options: ['usd', 'inr', 'eur', 'gbp', 'jpy', 'cad', 'aud'],
+        default: 'usd',
+        hint: 'Display price in this fiat currency'
+      },
+      apiKey: {
+        type: 'string',
+        secret: true,
+        label: 'CoinGecko Demo API Key (optional)',
+        hint: 'Free at coingecko.com — increases rate limits. Leave blank to use the public tier.'
+      }
+    }
   }
 ]

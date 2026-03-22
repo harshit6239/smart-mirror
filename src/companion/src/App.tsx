@@ -5,6 +5,7 @@ import WidgetConfig from './pages/WidgetConfig'
 import SystemSettings from './pages/SystemSettings'
 import WifiSetupPage from './pages/WifiSetupPage'
 import NotificationsPage from './pages/NotificationsPage'
+import WidgetStore from './pages/WidgetStore'
 
 const navClass = ({ isActive }: { isActive: boolean }): string =>
   isActive ? 'text-sky-400 font-semibold' : 'text-slate-400 hover:text-white'
@@ -25,6 +26,9 @@ export default function App(): React.JSX.Element {
             <NavLink to="/layout" className={navClass}>
               Layout
             </NavLink>
+            <NavLink to="/store" className={navClass}>
+              Store
+            </NavLink>
             <NavLink to="/notifications" className={navClass}>
               Notify
             </NavLink>
@@ -39,6 +43,7 @@ export default function App(): React.JSX.Element {
             <Route path="/" element={<HomePage />} />
             <Route path="/settings" element={<SystemSettings />} />
             <Route path="/layout" element={<LayoutEditor />} />
+            <Route path="/store" element={<WidgetStore />} />
             <Route path="/widget-config/:instanceId" element={<WidgetConfig />} />
             <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/wifi" element={<WifiSetupPage />} />

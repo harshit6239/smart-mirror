@@ -18,8 +18,9 @@ export type WidgetInstance = {
 
 export type InstalledWidget = {
   id: string
+  name: string
   version: string
-  source: string
+  source: string // bundle download URL
 }
 
 export type AppConfig = {
@@ -33,6 +34,7 @@ export type AppConfig = {
     brightnessDay: number
     brightnessNight: number
     brightnessSchedule: { dayStart: string; nightStart: string }
+    registryUrl: string // URL to the registry.json manifest (GitHub raw URL)
   }
 }
 
@@ -48,7 +50,8 @@ const defaults: AppConfig = {
     wakeTimeoutMs: 300_000,
     brightnessDay: 100,
     brightnessNight: 30,
-    brightnessSchedule: { dayStart: '07:00', nightStart: '22:00' }
+    brightnessSchedule: { dayStart: '07:00', nightStart: '22:00' },
+    registryUrl: ''
   }
 }
 

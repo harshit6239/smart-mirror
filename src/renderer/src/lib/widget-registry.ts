@@ -6,6 +6,7 @@ import WeatherWidget from '../widgets/weather/index'
 import CalendarWidget from '../widgets/calendar/index'
 import NewsWidget from '../widgets/news/index'
 import SpotifyWidget from '../widgets/spotify/index'
+import StocksWidget from '../widgets/stocks/index'
 
 /**
  * All widgets bundled with the app.
@@ -18,5 +19,6 @@ export const BUNDLED_WIDGETS: Record<string, React.ComponentType<WidgetProps>> =
   weather: WeatherWidget,
   calendar: CalendarWidget,
   news: NewsWidget,
-  spotify: SpotifyWidget
+  spotify: SpotifyWidget,
+  stocks: StocksWidget
 }

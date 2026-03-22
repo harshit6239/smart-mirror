@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { api } from '../lib/api'
 
 interface Network {
@@ -14,22 +14,22 @@ export default function WifiSetupPage(): React.JSX.Element {
   const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null)
   const [connecting, setConnecting] = useState(false)
 
-  const scan = async (): Promise<void> => {
+  const scan = useCallback(async (): Promise<void> => {
     setScanning(true)
     try {
       const nets = await api.get<Network[]>('/api/wifi/scan')
       setNetworks(nets)
-      if (nets.length > 0 && !ssid) setSsid(nets[0].ssid)
+      if (nets.length > 0) setSsid((prev) => prev || nets[0].ssid)
     } catch {
       // leave list empty
     } finally {
       setScanning(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     void scan()
-  }, [])
+  }, [scan])
 
   const connect = async (): Promise<void> => {
     if (!ssid) return

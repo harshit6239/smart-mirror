@@ -14,7 +14,7 @@ export default function WidgetGrid({ widgetIds }: WidgetGridProps): React.JSX.El
 
   if (!widgetInstances) return <></>
 
-  const instances = widgetIds.map((id) => widgetInstances[id]).filter(Boolean)
+  const instances = [...new Set(widgetIds)].map((id) => widgetInstances[id]).filter(Boolean)
 
   return (
     <div
